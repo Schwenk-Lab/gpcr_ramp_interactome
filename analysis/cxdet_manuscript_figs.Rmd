@@ -1,0 +1,1676 @@
+---
+title: "Complex detection manuscript figures"
+author: "Leo Dahl"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(stringsAsFactors = F)
+```
+
+Description
+===========
+
+> Making manuscript figures for GPCR-RAMP complex detection. Some figures require multiple plots to be combined in specific layouts, these figures are made in this script. 
+
+Packages and data
+=================
+
+```{r packages, message=F, warning=F}
+
+rm(list = ls())
+
+library(tidyverse)
+library(magrittr)
+library(patchwork)
+library(data.table)
+library(grid)
+library(ComplexHeatmap)
+library(circlize)
+library(ggbeeswarm)
+library(readxl)
+library(openxlsx)
+library(RColorBrewer)
+library(DescTools)
+library(ggplotify)
+library(ggh4x)
+library(ComplexUpset)
+library(ggdendro)
+library(ggvenn)
+library(limma)
+
+source("misc_functions_cxdet.R")
+
+```
+
+```{r data}
+
+# Load app data and reshape to work with the code in this script
+# List containing the long data from the assays and the endogenous assay data
+appdat <- readRDS("gpcr_cxdet_data.rds")
+
+datlist <- sapply(c("r", "z", "rz"), function(x) {
+  # Data to base the list on
+  d <- appdat
+
+  # Names of value columns to keep or skip
+  val_skip <- paste0("value_", setdiff(c("r", "z", "rz"), x))
+  val_keep <- paste0("value_", x)
+  
+  d$long_dat_all <- d$long_dat_all %>% select(-!!val_skip) %>% rename("value" = !!val_keep)
+  
+  return(d[c("prot", "long_dat_all")])
+}, simplify = F)
+
+rdat <- datlist$r
+zdat <- datlist$z
+rzdat <- datlist$rz
+
+# For the expression check use all samples, for the rest exclude gpcr.p11 plate samples as they have different interactors
+expr_dat <- rdat
+
+rdat$long_dat_all <- rdat$long_dat_all %>% filter(sample_type != "gpcr.p11")
+zdat$long_dat_all <- zdat$long_dat_all %>% filter(sample_type != "gpcr.p11")
+rzdat$long_dat_all <- rzdat$long_dat_all %>% filter(sample_type != "gpcr.p11")
+
+# Endogenous interaction data
+valid_dat <- appdat$valid_dat
+
+rm(datlist, appdat)
+
+out_dir <- "results/"
+
+```
+
+Plots
+=====
+
+RAMP expression
+---------------
+
+Fig S4A
+
+```{r}
+
+# RAMP expression (log2 data), capture either HA or one of the RAMPs, detect with OLLAS
+
+# Get p-values, y positions and labels for each interactor with each capture method
+# Same method as in Ab validation (anova + dunnett multiple comaprison test)
+ramp_expr_test <- expr_dat$long_dat_all %>%
+  filter(gene_name %in% c(paste0("RAMP", 1:3), "M anti-HA"),
+         detection_ab == "OLLAS",
+         interactor %in% c(paste0("RAMP", 1:3), "mock")) %>%
+  select(gene_name, interactor, value) %>%
+  mutate(gene_name = str_remove(gene_name, "M anti-")) %>%
+  group_by(gene_name) %>%
+  nest() %>%
+  mutate(p = map(data, ~ {
+    # Anova
+    ap <- summary(aov(value ~ interactor, data = .x))[[1]] %>% as.data.frame() %>% mutate(Capture = gene_name)
+    
+    # Dunnett's multiple comparison test
+    dp <- DunnettTest(x = .x$value, g = as.factor(.x$interactor), control = "mock")$mock %>%
+      as.data.frame() %>% rownames_to_column("interactor") %>% mutate(interactor = str_remove(interactor, "-mock")) %>%
+      mutate(capture = gene_name) %>% left_join(count(.x, interactor), by = "interactor")
+    
+    # y positions of labels
+    p_ypos <- .x %>% filter(interactor != "mock") %>% group_by(interactor) %>%
+      summarise(ypos = max(value, na.rm = T) + 0.3 * diff(range(value, na.rm = T))) %>% ungroup() %>%
+      mutate("gene_name" = gene_name,
+             "pval" = case_when(ap[1, 5] < 0.05 ~ dp[match(interactor, dp$interactor), "pval", drop = T],
+                                T ~ 1),
+             "pstar" = p_to_star(pval))
+    
+    return(list("anova" = ap, "dunnett" = dp, "plot_p" = p_ypos))
+    
+  })) %>%
+  pull(p)
+
+ramp_expr_anova_p <- lapply(ramp_expr_test, function(x) {as.data.frame(x$anova)[1, ]}) %>% data.table::rbindlist()
+ramp_expr_dunnett_p <- lapply(ramp_expr_test, function(x) {as.data.frame(x$dunnett)}) %>% data.table::rbindlist()
+
+# For table
+ramp_expr_p <- lapply(ramp_expr_test, function(x) x$plot_p) %>% data.table::rbindlist()
+
+# Plot with p-value labels
+ramp_expr_plot <- expr_dat$long_dat_all %>%
+  filter(gene_name %in% c(paste0("RAMP", 1:3), "M anti-HA"),
+         detection_ab == "OLLAS",
+         interactor %in% c(paste0("RAMP", 1:3), "mock")) %>% # sample_type != "gpcr.p11"
+  select(gene_name, interactor, value) %>%
+  mutate(gene_name = str_remove(gene_name, "M anti-")) %>%
+  ggplot() +
+  geom_violin(aes(x = interactor, y = log2(value), fill = interactor), show.legend = F) +
+  geom_text(aes(x = interactor, y = log2(ypos), label = pstar), ramp_expr_p, size = 6) +
+  stat_summary(aes(x = interactor, y = log2(value)), fun = mean, fun.min = mean, fun.max = mean,
+               geom = "errorbar", colour = "black", width = 0.25) +
+  geom_hline(yintercept = -Inf, linewidth = 2) + geom_vline(xintercept = -Inf, linewidth = 2) +
+  scale_fill_manual(values = c("RAMP1" = "#BFEFFF", "RAMP2" = "#B1E063", "RAMP3" = "#EEAD0E", "mock" = "white")) +
+  scale_x_discrete(labels = paste0("any.", c("mock", "RAMP1", "RAMP2", "RAMP3"))) +
+  labs(x = NULL, y = "log2(MFI)", title = "Capture target") +
+  facet_wrap(~ gene_name, nrow = 1) +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        plot.title = element_text(size = 14, hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title = element_text(size = 14),
+        strip.text = element_text(size = 14),
+        strip.background = element_rect(size = 2),
+        axis.ticks = element_line(size = 1))
+
+```
+
+```{r}
+# Remove now unnecessary data
+rm(expr_dat)
+ramp_expr_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_ramp_expr.pdf")
+ggsave(filename = ramp_expr_name, plot = ramp_expr_plot, width = 11, height = 4.2)
+```
+
+
+Complex detection, epitope capture
+----------------------------------
+
+```{r}
+# GPCRs to use
+gpcrs <- sort(unique(rzdat$long_dat_all$gpcr))
+gpcrs <- gpcrs[!gpcrs %in% c("empty", "mock")]
+
+# Perform complex detection and make sensitivity/specificity plots
+cxdet_prep_list <- cxdet_prep(gpcrs, rzdat)
+cxdet_cd_sep <- gpcrramp_sensspec(rzdat$long_dat_all, gpcrs,
+                                  cxdet_prep_list$expr_list, cxdet_prep_list$int_exp,
+                                  mk_plts = T)
+
+```
+
+
+Cutoff table
+------------
+
+Table S5
+
+```{r}
+co_tbl <- cxdet_cd_sep$cutoffs %>%
+  rename(Interaction = which_ramp,
+         Capture = capt, Detection = det,
+         Threshold = cutoff,
+         Sensitivity = sens, Specificity = spec)
+
+write_csv(co_tbl, paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_epitope_capt_thresholds.csv"))
+```
+
+HPA capture summary
+-------------------
+
+```{r}
+
+# Interactions
+cxdet_dens_res <- cxdet_dens(rzdat$long_dat_all, rzdat$prot, var_measure = mad, n_var = 6)
+
+# Expected interactions
+abs <- cxdet_dens_res$interactions$gene_name_id
+int_exp <- data.frame("gene_name_id" = abs,
+                      "gene_name" = rzdat$prot[match(abs, rzdat$prot$gene_name_id), "gene_name"],
+                      "antibody" = rzdat$prot[match(abs, rzdat$prot$gene_name_id), "antibody"]) %>%
+  unite("gene_name_ab", gene_name, antibody, remove = F) %>%
+  # Deal with multi-target Abs
+  mutate(gene_name_match = gene_name) %>%
+  separate_rows(gene_name_match, sep = ";") %>%
+  left_join(., cxdet_prep_list$int_exp %>% rename("gene_name_match" = "which_gpcr"), by = "gene_name_match") %>%
+  filter(!is.na(which_ramp)) %>% select(gene_name_ab, gene_name, which_ramp, int_exp) %>% distinct() %>%
+  pivot_wider(id_cols = c(gene_name_ab, gene_name), names_from = which_ramp, values_from = int_exp)
+
+
+```
+
+Table S6
+
+```{r}
+# Table of interactions + thresholds
+cxdet_prot_tbl <- cxdet_dens_res$interactions %>% select(-c(gene_name_id, data, plt)) %>%
+  separate(gene_name_ab, c("GPCR", "Antibody"), sep = "_") %>% rename(Threshold = cutoff) %>%
+  mutate(across(where(is.logical), function(x) ifelse(x, "Pass", "Fail"))) %>%
+  # Add RRIDs
+  left_join(rzdat$prot %>% select(antibody, rrid), by = c("Antibody" = "antibody")) %>%
+  rename("RRID" = "rrid") %>% relocate(RRID, .before = 3)
+
+cxdet_prot_tbl_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_cxdet_prot_tbl.xlsx")
+write.xlsx(cxdet_prot_tbl, cxdet_prot_tbl_name, asTable = F, overwrite = T)
+```
+
+
+Epitope and HPA capture together
+--------------------------------
+
+Sensitivity/Specificity and barplots for epitope and HPA capture. Figure 2 (A and B)
+
+```{r}
+# Horizontal barplots for epitope capture
+cxdet_bar_horiz <- cxdet_cd_sep$interactions %>%
+  group_by(capt, which_ramp) %>%
+  count(pass) %>%
+  ungroup() %>%
+  filter(!is.na(pass)) %>%
+  mutate(pass = factor(as.character(pass), levels = c("0", "1"))) %>%
+  mutate(capt = factor(capt, levels = sort(unique(capt), decreasing = T))) %>%
+  ggplot(aes(x = n, y = capt, fill = pass)) +
+  geom_bar(stat = "identity", show.legend = F) +
+  labs(x = "Number of GPCRs", y = NULL) +
+  scale_fill_brewer(palette = "Set2", direction = -1) +
+  scale_x_continuous(position = "top") +
+  facet_grid2(rows = vars(which_ramp), drop = T, scales = "free", independent = T) +
+  theme_minimal() +
+  theme(strip.text = element_blank(),
+        axis.text = element_text(size = 10, colour = "black"),
+        axis.title = element_text(size = 12, colour = "black"))
+
+# Data for barplot of interactions
+cxdet_dens_bardat <- cxdet_dens_res$interactions %>%
+  select(gene_name_id, contains("RAMP")) %>%
+  pivot_longer(cols = -gene_name_id, names_to = "ramp", values_to = "pass") %>%
+  filter(!is.na(pass)) %>%
+  count(ramp, pass)
+
+# Include total in y-axis ticks
+ab_tot <- cxdet_dens_bardat %>% group_by(ramp) %>% summarise(s = sum(n)) %>% pull(s) %>% max()
+yticks <- seq(0, ab_tot, by = 50)
+if (!ab_tot %in% yticks) {yticks <- append(yticks, ab_tot)}
+cxdet_dens_barplt <- ggplot(cxdet_dens_bardat, aes(x = ramp, y = n, fill = pass)) +
+  geom_bar(stat = "identity", show.legend = F) +
+  scale_fill_brewer(palette = "Set2", direction = -1) +
+  scale_y_continuous(breaks = yticks) +
+  labs(x = NULL, y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title = element_text(size = 14))
+
+# Horizontal barplots for HPA capture
+cxdet_dens_bar_horiz <- cxdet_dens_bardat %>%
+  mutate(ramp = factor(ramp, levels = sort(unique(ramp), decreasing = T))) %>%
+  ggplot(aes(x = n, y = ramp, fill = pass)) +
+  geom_bar(stat = "identity", show.legend = T) +
+  scale_fill_brewer(palette = "Set2", direction = -1, labels = c("False", "True")) +
+  scale_x_continuous(breaks = yticks, position = "top") +
+  labs(x = "Number of anti-GPCR antibodies", y = NULL, fill = "Complex detected") +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 10, colour = "black"),
+        axis.title = element_text(size = 12, colour = "black"))
+
+# Plot-side annotation
+text_topright <- ggplot(data.frame(a = "Epitope\nantibody capture", x = 1, y = 1)) +
+  geom_text(aes(x = x, y = y, label = a), angle = -90, size = 4) +
+  geom_vline(xintercept = 0.9, linewidth = 0.8) +
+  xlim(0.9, 1.1) +
+  theme_void() +
+  coord_cartesian(clip = "off")
+
+text_botright <- ggplot(data.frame(a = "Native GPCR\nantibody capture", x = 1, y = 1)) +
+  geom_text(aes(x = x, y = y, label = a), angle = -90, size = 4) +
+  theme_void() +
+  coord_cartesian(clip = "off")
+
+dsgn <- "
+AAAABBBD
+AAAABBBD
+AAAABBBD
+AAAACCCE
+"
+cxdet_both_plt <-
+  (cxdet_cd_sep$plots + labs(y = "Probability", tag = "A") +
+     theme(axis.text = element_text(size = 12, colour = "black"),
+           axis.title = element_text(size = 12, colour = "black"),
+           strip.text = element_text(size = 11))) +
+  (cxdet_bar_horiz + labs(tag = "B")) +
+  cxdet_dens_bar_horiz +
+  text_topright + text_botright +
+  plot_layout(design = dsgn) &
+  # Common layout parameters
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        plot.tag = element_text(size = 18))
+
+```
+
+```{r}
+cxdet_both_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_cxdet_fig2n3.pdf")
+ggsave(filename = cxdet_both_name, plot = cxdet_both_plt, width = 7.25, height = 7.5)
+```
+
+Heatmaps for the different capture schemes. Figure S5
+
+```{r}
+
+# Make epitope capture heatmap split in two
+splits <- split(gpcrs,
+                ceiling(1:length(gpcrs)/ceiling(length(gpcrs)/2)))
+
+epi_hm_gg <- lapply(splits, function(x) {
+  grid.grabExpr(draw(pass_hm(cxdet_cd_sep$interactions %>% filter(which_gpcr %in% x), draw_hm = F)$heatmap))
+})
+
+cxdet_epi_hm <- wrap_plots(epi_hm_gg, nrow = 1, widths = c(1, 1))
+
+# Heatmap of protein capture interactions
+splits <- split(1:nrow(cxdet_dens_res$interactions),
+                ceiling(1:nrow(cxdet_dens_res$interactions)/ceiling(nrow(cxdet_dens_res$interactions)/2)))
+
+spl_hm <- lapply(splits, function(x) {
+  dens_pass_hm(cxdet_dens_res$interactions[x, ], int_exp, col_name_bot = F)
+})
+
+hm_gg <- sapply(names(spl_hm), function(x) {
+  if (x == names(spl_hm)[length(spl_hm)]) {
+    # Add legend to final plot
+    grid.grabExpr(draw(spl_hm[[x]]$heatmap, annotation_legend_list = spl_hm[[x]]$legend))
+  } else {
+    grid.grabExpr(draw(spl_hm[[x]]$heatmap))
+  }
+}, simplify = F)
+
+cxdet_dens_hm <- wrap_plots(hm_gg, nrow = 1, widths = c(1, 2.4))
+
+# Combine epitope and HPA capture heatmaps
+pass_hm_both <- wrap_plots(list(cxdet_epi_hm, cxdet_dens_hm), widths = c(1, 0.98))
+
+```
+
+
+```{r}
+hm_both_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_pass_hm_both.pdf")
+ggsave(filename = hm_both_name, plot = pass_hm_both, width = 7, height = 8)
+```
+
+Summarising table
+-----------------
+
+Table S7
+
+```{r}
+# Make summary tables containing results from both epitope and protein capture
+# Categorised evidence of interaction, number of passing schemes, percent of passing schemes
+# Also add header rows for excel
+sum_tbl <- rbind(
+  cxdet_cd_sep$interaction_evidence %>% select(contains("which"), int_evid) %>% mutate(capt = "Epitope"),
+  cxdet_dens_res$interaction_evidence %>% select(contains("which"), int_evid) %>% mutate(capt = "Protein"),
+  cxdet_cd_sep$interactions %>% select(contains("which"), int_exp) %>% rename(int_evid = int_exp) %>% mutate(capt = "Literature") %>% distinct()
+) %>%
+  pivot_wider(id_cols = which_gpcr, names_from = c(which_ramp, capt), values_from = int_evid) %>%
+  relocate(which_gpcr, contains("RAMP1"), contains("RAMP2"), contains("RAMP3"))
+sum_tbl <- rbind(
+  data.frame(c("", "GPCR"), str_split(colnames(sum_tbl)[-1], "_")) %>% setNames(colnames(sum_tbl)),
+  sum_tbl
+)
+
+sum_tbl_n <- rbind(
+  cxdet_cd_sep$interaction_n %>% mutate(capt = "Epitope"),
+  cxdet_dens_res$interaction_n %>% mutate(capt = "Protein")
+) %>%
+  pivot_wider(id_cols = which_gpcr, names_from = c(which_ramp, capt), values_from = n_pass) %>%
+  relocate(which_gpcr, contains("RAMP1"), contains("RAMP2"), contains("RAMP3")) %>%
+  ungroup()
+sum_tbl_n <- rbind(
+  data.frame(c("", "GPCR"), str_split(colnames(sum_tbl_n)[-1], "_")) %>% setNames(colnames(sum_tbl_n)),
+  sum_tbl_n
+)
+
+sum_tbl_fraction <- rbind(
+  cxdet_cd_sep$interaction_evidence %>% select(contains("which"), fraction_pass) %>% mutate(capt = "Epitope"),
+  cxdet_dens_res$interaction_evidence %>% select(contains("which"), fraction_pass) %>% mutate(capt = "Protein")
+) %>%
+  pivot_wider(id_cols = which_gpcr, names_from = c(which_ramp, capt), values_from = fraction_pass) %>%
+  relocate(which_gpcr, contains("RAMP1"), contains("RAMP2"), contains("RAMP3"))
+sum_tbl_fraction <- rbind(
+  data.frame(c("", "GPCR"), str_split(colnames(sum_tbl_fraction)[-1], "_")) %>% setNames(colnames(sum_tbl_fraction)),
+  sum_tbl_fraction
+)
+```
+
+```{r}
+# Save summary tables as one excel file
+sum_tbl_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_summary_tbl.xlsx")
+wb <- createWorkbook()
+# Loop over tables to add to sheet while adding extra formatting
+for (i in 1:3) {
+  addWorksheet(wb, switch(i,
+                          "1" = "Evidence of interaction",
+                          "2" = "Number of passing schemes",
+                          "3" = "Fraction of passing schemes"))
+  tbl_in <- switch(i, "1" = sum_tbl, "2" = sum_tbl_n, "3" = sum_tbl_fraction)
+  writeData(wb, i, tbl_in, colNames = F)
+  addStyle(wb, i, createStyle(textDecoration = "bold", border = "TopBottomLeftRight"), rep(2, ncol(tbl_in)), 1:ncol(tbl_in))
+  addStyle(wb, i, createStyle(halign = "center", textDecoration = "bold",  border = "TopBottomLeftRight"),
+           rep(1, ncol(tbl_in)), 1:ncol(tbl_in))
+  mergeCells(wb, i, str_which(tbl_in[1, ], "RAMP1"), rep(1, length(str_which(tbl_in[1, ], "RAMP1"))))
+  mergeCells(wb, i, str_which(tbl_in[1, ], "RAMP2"), rep(1, length(str_which(tbl_in[1, ], "RAMP2"))))
+  mergeCells(wb, i, str_which(tbl_in[1, ], "RAMP3"), rep(1, length(str_which(tbl_in[1, ], "RAMP3"))))
+}
+
+saveWorkbook(wb, sum_tbl_name, overwrite = T)
+```
+
+
+Upset plots of interactions
+---------------------------
+
+Figure 3A
+
+```{r}
+upset_epi <- cxdet_ramp_upset(cxdet_cd_sep$interaction_evidence, set_sizes = F, name = NULL,
+                              matrix = intersection_matrix(geom = geom_point(size = 1.5),
+                                                           segment = geom_segment(size = 0.25)),
+                              # Set same y axis scales for the two plots
+                              base_annotations = list(
+                                "Intersection size" = intersection_size(text = list(size = 2)) +
+                                  ylim(0, 60) + theme(axis.text = element_text(size = 8),
+                                                      axis.title = element_text(size = 10),
+                                                      panel.grid.major.x = element_blank())
+                              ),
+                              themes = upset_modify_themes(list(
+                                'intersections_matrix' = theme(text = element_text(size = 8))
+                              )),
+                              height_ratio = 0.5) +
+  labs(title = "Epitope capture") +
+  theme(plot.title = element_text(hjust = 0.65, size = 10))
+upset_hpa <- cxdet_ramp_upset(cxdet_dens_res$interaction_evidence, set_sizes = F, name = NULL,
+                              # Remove some labels redundant labels that are the same in both plots
+                              matrix = intersection_matrix(geom = geom_point(size = 1.5),
+                                                           segment = geom_segment(size = 0.25)) + guides(y = "none"),
+                              base_annotations = list(
+                                "Intersection size" = intersection_size(text = list(size = 2)) +
+                                  ylim(0, 60) + theme(axis.title = element_blank(),
+                                                      axis.text = element_blank(),
+                                                      panel.grid.major.x = element_blank())
+                              ),
+                              height_ratio = 0.5) +
+  labs(title = "Protein capture") +
+  theme(plot.title = element_text(hjust = 0.5, size = 10))
+cxdet_upset <- upset_epi + upset_hpa + plot_layout(widths = c(1, 0.8))
+```
+
+```{r}
+cxdet_upset_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_cxdet_upset_both.pdf")
+ggsave(filename = cxdet_upset_name, plot = cxdet_upset, width = 7.25, height = 3, device = "pdf", useDingbats = F)
+```
+
+Epitope and GPCR capture complex evidence matrix
+------------------------------------------------
+
+```{r}
+data.frame("Strong" = c("Yes", "Yes", "Maybe"),
+           "Medium" = c("Yes", "Maybe", "No"),
+           "Weak" = c("Maybe", "No", "No")) %>%
+    `rownames<-`(c("Strong", "Medium", "Weak"))
+# Put together epitope and protein capture and get only those with strong/strong, strong/medium, weak/medium, or weak/weak evidences of interaction if there are validated antibodies. If no validated antibodies, strong is yes and weak is no, skip medium
+epi_prot_evid_matrix <- rbind(
+  cxdet_cd_sep$interaction_evidence %>%
+    select(contains("which"), int_evid) %>%
+    mutate(capt = "epitope"),
+  cxdet_dens_res$interaction_evidence %>%
+    select(contains("which"), int_evid) %>%
+    mutate(capt = "protein")
+) %>%
+  pivot_wider(id_cols = c(which_gpcr, which_ramp), names_from = capt, values_from = int_evid) %>%
+  group_by(which_gpcr, which_ramp) %>%
+  # filter(!(epitope == "Strong" & protein == "Weak"),
+  #        !(epitope == "Medium" & protein == "Medium"),
+  #        !(epitope == "Weak" & protein == "Strong")) %>%
+  mutate(class = case_when(
+    epitope == "Strong" & protein == "Weak" ~ "Medium",
+    epitope == "Weak" & protein == "Strong" ~ "Medium",
+    epitope == "Medium" & protein == "Medium" ~ "Medium",
+    epitope == "Medium" & is.na(protein) ~ "Medium",
+    "Strong" %in% c(epitope, protein) ~ "Yes",
+    "Weak" %in% c(epitope, protein) ~ "No",
+    epitope == "Strong" & is.na(protein) ~ "Yes",
+    epitope == "Weak" & is.na(protein) ~ "No")) %>%
+  filter(!is.na(class)) %>%
+  filter(class != "Medium") %>%
+  ungroup()
+
+# Also classify based on whether a GPCR interacts with any RAMP or not
+gpcr_any_int <- epi_prot_evid_matrix %>%
+  group_by(which_gpcr) %>%
+  summarise(any_int = case_when(any("Yes" %in% class) ~ "Yes", T ~ "No")) %>%
+  ungroup()
+
+```
+
+Arrestin and G protein statistics
+---------------------------------
+
+figure S13 (A, B, C)
+
+```{r}
+# Get arrestin and G-protein family annotations
+# Annotations downloaded from GPCRdb
+# Look at log(Emax/EC50), convert to a binary classification
+arr_dat <- read_excel("arrestin_coupling.xlsx") %>%
+  filter(!is.na(group)) %>% select(uniprot, contains("log")) %>%
+  mutate(across(contains("log"), .fns = function(x) {
+    case_when(as.numeric(x) == 0 ~ 0, as.numeric(x) != 0 ~ 1)
+  }))
+gprot_dat <- read_excel("families_coupling.xlsx") %>%
+  filter(!is.na(group), biosensor == "Mean") %>% select(uniprot, contains("guide")) %>%
+  # Remove dashes
+  mutate(across(contains("guide"), .fns = function(x) {
+    # Use case_when to be able to introduce NAs
+    case_when(x != "-" ~ x)
+  }))
+gprot_dat$n_prim <- apply(gprot_dat, 1, function(x) {
+  sum(x == "1'", na.rm = T)
+})
+gprot_dat$n_sec <- apply(gprot_dat, 1, function(x) {
+  sum(x == "2'", na.rm = T)
+})
+
+# Add new info to any int data
+gpcr_any_int <- gpcr_any_int %>% left_join(arr_dat, by = c("which_gpcr" = "uniprot")) %>%
+  left_join(gprot_dat, by = c("which_gpcr" = "uniprot"))
+
+arr_gprot_pie <- function(dat_in, fill_name = NULL) {
+  # Get p-values
+  dat_p <- dat_in %>%
+    group_by(value) %>% nest() %>%
+    mutate(p = map(data, ~ {
+      fisher.test(.x$name, .x$any_int)$p.value
+    })) %>%
+    select(-data) %>%
+    unnest(p)
+  
+  # Get counts for plotting
+  dat_counts <- dat_in %>%
+    count(name, any_int, value) %>%
+    mutate(percent = n / sum(n) * 100, n_tot = paste0(n, "/", sum(n)), .by = c(any_int, value)) %>%
+    # P-value things
+    left_join(dat_p, by = "value") %>%
+    mutate(x1 = 101, x2 = 103, y1 = 1, y2 = 2, x_bar = 103, x_text = 108, y_text = 1.5) %>%
+    mutate(pstar = p_to_star(p))
+  
+  # Plot differently depending on whether there are multiple levels or not (facet if more than one)
+  lab_pos <- dat_counts %>%
+    group_by(any_int, value) %>%
+    mutate(csum = rev(cumsum(rev(percent))), 
+           pos = percent / 2 + lead(csum, 1),
+           pos = if_else(is.na(pos), percent / 2, pos))
+
+  dat_plt <- dat_counts %>%
+    ggplot(aes(x = "", y = percent, fill = name)) +
+    geom_bar(stat = "identity", colour = "black", width = 1) +
+    ggrepel::geom_label_repel(aes(y = pos, label = paste0("N: ", n_tot, "\n(", signif(percent, 3), "%)")),
+                              size = 2, nudge_x = 1, data = lab_pos,
+                              show.legend = F, segment.size = 0.2) +
+    scale_fill_brewer(palette = "Accent", direction = 1) +
+    labs(x = "Percent", y = "Any RAMP interaction", fill = fill_name) +
+    facet_grid(cols = vars(any_int)) +
+    coord_polar(theta = "y") +
+    theme_void() +
+    theme(strip.text.y = element_text(size = 14, angle = -90),
+          strip.text.x = element_text(size = 14))
+  
+    if (length(unique(dat_counts$value)) > 1) {dat_plt <- dat_plt + facet_grid(cols = vars(any_int), rows = vars(value))}
+    
+  return(list("plt" = dat_plt, "counts" = dat_counts, "p" = dat_p))
+}
+
+# Make plots showing distributions within yes/no groups
+arr_values <- gpcr_any_int %>%
+  select(which_gpcr, any_int, contains("arr")) %>%
+  filter(!is.na(arrb1_log)) %>%
+  pivot_longer(cols = -c(which_gpcr, any_int)) %>%
+  filter(value == 1) %>%
+  mutate(name = case_when(name == "arrb1_log" ~ "\u03B2arrestin1",
+                          name == "arrb2_log" ~ "\u03B2arrestin2",
+                          name == "arrb2_no_grk_log" ~ "\u03B2arrestin2,\nno GRK")) %>%
+  mutate(any_int = factor(any_int, levels = c("Yes", "No")))
+
+arr_plt <- arr_gprot_pie(arr_values, "\u03B2Arrestin")
+
+# Gprotein
+gprot_values <- gpcr_any_int %>%
+  select(which_gpcr, any_int, contains("guide")) %>%
+  pivot_longer(cols = -c(which_gpcr, any_int)) %>%
+  filter(!is.na(value)) %>%
+  mutate(name = case_when(str_detect(name, "gi_o") ~ "Gi/o",
+                          str_detect(name, "gq_11") ~ "Gq/11",
+                          str_detect(name, "g12_13") ~ "G12/13",
+                          str_detect(name, "gs") ~ "Gs")) %>%
+  mutate(value = case_when(value == "1'" ~ "Primary",
+                           value == "2'" ~ "Secondary")) %>%
+  mutate(any_int = factor(any_int, levels = c("Yes", "No")))
+
+gprot_plt <- arr_gprot_pie(gprot_values, "G protein")
+
+gprot_n_values <- gpcr_any_int %>%
+  select(which_gpcr, any_int, n_prim, n_sec) %>%
+  mutate(any_int = factor(any_int, levels = c("Yes", "No")))
+
+gprot_prim <- arr_gprot_pie(gprot_n_values %>% select(-n_sec) %>% rename(name = n_prim) %>%
+                              mutate(value = 1, name = as.character(name)) %>%
+                              filter(!is.na(name)),
+                            fill_name = "Number of\nprimary\ncouplings")
+
+gprot_sec <- arr_gprot_pie(gprot_n_values %>% select(-n_prim) %>% rename(name = n_sec) %>%
+                              mutate(value = 1, name = as.character(name)) %>%
+                              filter(!is.na(name)),
+                            fill_name = "Number of\nsecondary\ncouplings")
+
+# Table over number of yes/no and how many have any information on coupling
+yn <- gpcr_any_int %>%
+  group_by(which_gpcr) %>%
+  mutate(arr_info = case_when(any(c(!is.na(arrb1_log), !is.na(arrb2_no_grk_log), !is.na(arrb2_log))) ~ "Yes", T ~ "No"),
+         gprot_info = case_when(any(c(!is.na(guide_to_pharm_gs), !is.na(guide_to_pharm_gi_o), !is.na(guide_to_pharm_gq_11), !is.na(guide_to_pharm_g12_13))) ~ "Yes", T ~ "No")) %>%
+  ungroup() %>%
+  count(any_int, arr_info, gprot_info) %>%
+  group_by(any_int) %>%
+  mutate(percent_by_any_int = n / sum(n) * 100)
+
+```
+
+```{r}
+arr_gprot_combined <- gprot_plt$plt /
+  gprot_prim$plt /
+  arr_plt$plt +
+  plot_layout(heights = c(2, 1, 1)) +
+  plot_annotation(tag_levels = "A", theme = theme(plot.tag = element_text(size = 18)))
+
+ggsave(filename = paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_arrestin_gprot.pdf"), plot = arr_gprot_combined, height = 9, width = 7.25-1, device = cairo_pdf)
+
+```
+
+Interaction and expression
+--------------------------
+
+RAMP expression vs interaction (figure S6, A and B)
+
+```{r}
+ramp_qrt_plts <- quartile_plots(rdat$long_dat_all, cxdet_cd_sep$interaction_evidence, cxdet_dens_res$interaction_evidence) %>%
+  wrap_plots(ncol = 1, guides = "collect")
+```
+
+```{r}
+ramp_qrt_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_cxdet_ramp_quartiles.pdf")
+ggsave(filename = ramp_qrt_name, plot = ramp_qrt_plts, width = 7.3, height = 5)
+```
+
+GPCR expression vs interaction (Figure S6, C and D)
+
+```{r}
+gpcr_qrt_plts <- quartile_plots(rdat$long_dat_all, cxdet_cd_sep$interaction_evidence, cxdet_dens_res$interaction_evidence, "GPCR") %>%
+  wrap_plots(ncol = 1, guides = "collect")
+```
+
+```{r}
+gpcr_qrt_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_cxdet_gpcr_quartiles.pdf")
+ggsave(filename = gpcr_qrt_name, plot = gpcr_qrt_plts, width = 7.3, height = 5)
+```
+
+Split into each capture-detection scheme (Figure S7, A and B)
+
+```{r}
+ramp_qrt_split <- quartile_plt_per_capt(rdat$long_dat_all, cxdet_cd_sep$interactions %>% mutate(pass = case_when(pass == "1" ~ "Pass", pass == "0" ~ "Fail")),
+                                        cxdet_dens_res$interaction_evidence, "RAMP")
+gpcr_qrt_split <- quartile_plt_per_capt(rdat$long_dat_all, cxdet_cd_sep$interactions %>% mutate(pass = case_when(pass == "1" ~ "Pass", pass == "0" ~ "Fail")),
+                                        cxdet_dens_res$interaction_evidence, "GPCR")
+```
+
+
+```{r}
+ramp_qrt_split_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_ramp_quartile_split.pdf")
+ggsave(filename = ramp_qrt_split_name, plot = ramp_qrt_split, width = 7.3, height = 5)
+
+gpcr_qrt_split_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_gpcr_quartile_split.pdf")
+ggsave(filename = gpcr_qrt_split_name, plot = gpcr_qrt_split, width = 7.3, height = 5)
+```
+
+
+QC plots
+--------
+
+```{r pilot plot data}
+pilot_file <- "pilot_plate.xlsx"
+
+# Binder info
+pilot_binder <- read_excel(pilot_file, sheet = 2)
+
+# MFI
+pilot_mfi <- read_excel(pilot_file, sheet = 4)
+```
+
+Figure S2 (B and C), Figure S3
+
+```{r pilot barplots}
+pilot_barplt <- pilot_mfi %>%
+  # Get CALCRL and mock-mock samples
+  filter(GPCR_comment == "CALCRL_old_v2" | (GPCR == "mock" & interactor == "mock")) %>%
+  select(GPCR_comment, interactor_comment, detection_ab,
+         contains("1D4"), contains("ollas"), contains("FLAG"), contains("HA"), contains("CALCRL"), contains("RAMP3"), contains("Bare")) %>%
+  # Turn into numeric class
+  mutate(`M anti-HA.308` = as.numeric(`M anti-HA.308`)) %>%
+  # Add column for sample names
+  unite("samp", GPCR_comment, interactor_comment, sep = ".") %>%
+  # Get mean of HA beads (same binder)
+  mutate(HA = rowMeans(select(., `M anti-HA.292`, `M anti-HA.308`))) %>%
+  select(-c(`M anti-HA.292`, `M anti-HA.308`)) %>%
+  # Rename binders to be more concise
+  rename_with(.fn = function(x) {
+    new_name <- case_when(grepl("1D4", x) ~ "1D4",
+                          grepl("Ollas", x) ~ "OLLAS",
+                          grepl("FLAG", x) ~ "FLAG",
+                          grepl("CALCRL", x) ~ "CALCRL",
+                          grepl("RAMP3", x) ~ "RAMP3",
+                          grepl("Bare", x) ~ "Bare bead",
+                          T ~ x)
+    return(new_name)
+  }) %>%
+  pivot_longer(cols = -c(samp, detection_ab), names_to = "binder", values_to = "MFI") %>%
+  # Reorder facets
+  mutate(binder = factor(binder, levels = c("Bare bead", "CALCRL", "RAMP3", "1D4", "OLLAS", "FLAG", "HA"))) %>%
+  # New labels for x-axis groups
+  # RAMP3_old: construct 1, has FLAG and OLLAS tags
+  # RAMP3: construct 2, has 3HA and OLLAS tags
+  mutate(new_col = case_when(grepl("RAMP3_old", samp, ignore.case = T) ~ "1",
+                             grepl("RAMP3$", samp) ~ "2",
+                             T ~ "Mock")) %>%
+  mutate(samp = factor(samp, levels = sort(unique(samp), decreasing = T)),
+         new_col = factor(new_col, levels = c("Mock", "1", "2"))) %>%
+  # Plot with log2 of ratios between signal and mock
+  group_by(detection_ab, binder) %>%
+  mutate(MFI = log2(MFI / MFI[samp == "mock.mock"])) %>%
+  ungroup() %>%
+  # Skip 1D4 capture with 1D4 detection and OLLAS capture with OLLAS detection, skip mock
+  filter(detection_ab != binder, samp != "mock.mock") %>%
+  group_by(detection_ab) %>%
+  nest() %>%
+  mutate(plt = map(data, ~ {
+    plt_out <- .x %>%
+      mutate(detab = detection_ab) %>%
+      ggplot() +
+      geom_bar(aes(x = new_col, y = MFI), stat = "identity", width = 0.75) +
+      geom_hline(yintercept = -Inf, size = 2.5) +
+      geom_vline(xintercept = -Inf, size = 2.5) +
+      facet_grid(detab ~ binder) +
+      labs(x = "RAMP3 construct", fill = "Interactor") +
+      ylim(0, 8.5) +
+      theme_classic() +
+      theme(axis.line = element_blank(),
+            axis.text.x = element_text(size = 18, colour = "black"),
+            axis.text.y.left = element_text(size = 18, colour = "black"),
+            axis.ticks = element_line(size = 2, colour = "black"),
+            axis.title.y = element_blank(),
+            axis.title.x = element_text(size = 18),
+            strip.text = element_text(size = 18),
+            strip.background = element_rect(size = 2),
+            legend.title = element_text(size = 18),
+            legend.text = element_text(size = 18))
+    
+    if (detection_ab == "1D4") {
+      plt_out <- plt_out +
+        labs(title = "Capture") +
+        theme(axis.ticks.x = element_blank(), axis.text.x = element_blank(), axis.title.x = element_blank(),
+              plot.title = element_text(hjust = 0.5, size = 18))
+    }
+    
+    return(plt_out)
+  })) %>%
+  pull(plt)
+
+# Due to removing 1D4 capture w/ 1D4 detection and OLLAS capture w/ OLLAS detection, some facets become empty if using facet_grid,
+# or the facet labels all end up on the top instead of some of them on the top and some of them to the right
+# To remove the empty facets while keeping labels on the right, the data is split along one facet dimension (detection_ab) and then
+# pasted together using the patchwork package.
+# To add axis annotation on the left and facet annotation on the right (if faceting normally: fixed automatically and added by forcing a second y axis, respectively),
+# text only plots are added on both sides of the plots, again with the patchwork package
+# Thanks to guides = "collect", the annotation on the right ends up on the left of the legend
+text_left <- ggplot(data.frame(a = "2-Fold change", x = 1, y = 1)) +
+  geom_text(aes(x = x, y = y, label = a), angle = 90, size = 7) +
+  theme_void() +
+  coord_cartesian(clip = "off")
+text_right <- ggplot(data.frame(a = "Detection", x = 1, y = 1)) +
+  geom_text(aes(x = x, y = y, label = a), angle = -90, size = 7) +
+  theme_void() +
+  coord_cartesian(clip = "off")
+
+barplt_out <- text_left + (pilot_barplt[[1]] / pilot_barplt[[2]]) + text_right +
+  plot_layout(widths = c(1, 25, 1), guides = "collect")
+
+# Compare CALCRL with different tags
+pilot_barplt2 <- pilot_mfi %>%
+  filter((GPCR_comment %in% c("CALCRL_old", "CALCRL_old_v2") & interactor_comment == "RAMP3") |
+         (GPCR_comment == "mock" & interactor_comment == "mock")) %>%
+  select(GPCR_comment, interactor_comment, detection_ab,
+         contains("1D4"), contains("ollas"), contains("FLAG"), contains("HA"), contains("CALCRL"), contains("RAMP3"), contains("Bare")) %>%
+  # Turn into numeric class
+  mutate(`M anti-HA.308` = as.numeric(`M anti-HA.308`)) %>%
+  # Add column for sample names
+  unite("samp", GPCR_comment, interactor_comment, sep = ".") %>%
+  # Get mean of HA beads (same binder)
+  mutate(HA = rowMeans(select(., `M anti-HA.292`, `M anti-HA.308`))) %>%
+  select(-c(`M anti-HA.292`, `M anti-HA.308`)) %>%
+  # Rename binders to be more concise
+  rename_with(.fn = function(x) {
+    new_name <- case_when(grepl("1D4", x) ~ "1D4",
+                          grepl("Ollas", x) ~ "OLLAS",
+                          grepl("FLAG", x) ~ "FLAG",
+                          grepl("CALCRL", x) ~ "CALCRL",
+                          grepl("RAMP3", x) ~ "RAMP3",
+                          grepl("Bare", x) ~ "Bare bead",
+                          T ~ x)
+    return(new_name)
+  }) %>%
+  pivot_longer(cols = -c(samp, detection_ab), names_to = "binder", values_to = "MFI") %>%
+  # Reorder facets
+  mutate(binder = factor(binder, levels = c("Bare bead", "CALCRL", "RAMP3", "1D4", "OLLAS", "FLAG", "HA"))) %>%
+  # New labels for x-axis groups
+  # old: construct 1, with HA and 1D4 tags
+  # old_v2: construct 2, with FLAG and 1D4 tags
+  mutate(new_col = case_when(grepl("old_v2\\.", samp, ignore.case = T) ~ "2",
+                             grepl("old\\.", samp) ~ "1",
+                             T ~ "Mock")) %>%
+  mutate(samp = factor(samp, levels = sort(unique(samp), decreasing = T)),
+         new_col = factor(new_col, levels = c("Mock", "1", "2"))) %>%
+  # Plot with log2 fold change
+  group_by(detection_ab, binder) %>%
+  mutate(MFI = log2(MFI / MFI[samp == "mock.mock"])) %>%
+  ungroup() %>%
+  # Skip 1D4 capture with 1D4 detection and OLLAS capture with OLLAS detection
+  filter(detection_ab != binder, samp != "mock.mock") %>%
+  # Skip samples where both the CALCRL and the RAMP have the tag being captured, and where none of them have it
+  group_by(detection_ab) %>%
+  nest() %>%
+  mutate(plt = map(data, ~ {
+    plt_out <- .x %>%
+      mutate(detab = detection_ab) %>%
+      ggplot() +
+      geom_bar(aes(x = new_col, y = MFI), stat = "identity", width = 0.75) +
+      geom_hline(yintercept = -Inf, size = 2.5) +
+      geom_vline(xintercept = -Inf, size = 2.5) +
+      facet_grid(detab ~ binder) +
+      labs(x = "CALCRL construct", fill = "GPCR") +
+      ylim(0, 8.5) +
+      theme_classic() +
+      theme(axis.line = element_blank(),
+            axis.text.x = element_text(size = 18, colour = "black"),
+            axis.text.y.left = element_text(size = 18, colour = "black"),
+            axis.ticks = element_line(size = 2, colour = "black"),
+            axis.title.y = element_blank(),
+            axis.title.x = element_text(size = 18),
+            strip.text = element_text(size = 18),
+            strip.background = element_rect(size = 2),
+            legend.title = element_text(size = 18),
+            legend.text = element_text(size = 18))
+    
+    if (detection_ab == "1D4") {
+      plt_out <- plt_out +
+        labs(title = "Capture") +
+        theme(axis.ticks.x = element_blank(), axis.text.x = element_blank(), axis.title.x = element_blank(),
+              plot.title = element_text(hjust = 0.5, size = 18))
+    }
+    
+    return(plt_out)
+  })) %>%
+  pull(plt)
+
+barplt_out2 <- text_left + (pilot_barplt2[[1]] / pilot_barplt2[[2]]) + text_right +
+  plot_layout(widths = c(1, 25, 1), guides = "collect")
+
+```
+
+
+```{r pilot boxplots}
+# Boxplots
+pilot_boxes <- pilot_mfi %>%
+  filter((GPCR_comment == "GPRC5A" & interactor_comment %in% c("mock", "RAMP2")) |
+             (GPCR_comment == "HCRTR2" & interactor_comment %in% c("mock", "RAMP3"))) %>%
+  select(GPCR_comment, interactor_comment, detection_ab,
+         contains("Ollas"), contains("HA"), contains("FLAG"), contains("1D4")) %>%
+  # Convert to number to be able to pivot
+  mutate(`M anti-HA.308` = as.numeric(`M anti-HA.308`)) %>%
+  # Create sample names
+  unite("samp", GPCR_comment, interactor_comment, sep = ".", remove = F) %>%
+  pivot_longer(cols = -c(samp, GPCR_comment, interactor_comment, detection_ab),
+               names_to = "binder", values_to = "MFI") %>%
+  # Make more concise binder names (and combine HA beads in the process)
+  mutate(binder = case_when(grepl("1D4", binder) ~ "1D4",
+                            grepl("Ollas", binder) ~ "OLLAS",
+                            grepl("FLAG", binder) ~ "FLAG",
+                            grepl("HA", binder) ~ "HA",
+                            T ~ binder)) %>%
+  # Look at complex-forming combinations
+  filter((binder %in% c("OLLAS", "HA") & detection_ab == "1D4") |
+             (binder %in% c("1D4", "FLAG") & detection_ab == "OLLAS")) %>%
+  mutate(binder = factor(binder, levels = c("OLLAS", "HA", "1D4", "FLAG"))) %>%
+  # Make simpler axis labels
+  mutate(samp = str_extract(samp, "mock|RAMP\\d")) %>%
+  # By GPCR and detab
+  group_by(detection_ab, GPCR_comment) %>%
+  nest() %>%
+  mutate(plt = map(data, ~ {
+    plt_range <- c(4.7, 13.5)
+    plt_diff <- diff(plt_range)
+    
+    # One-sided wilcoxon test to check if mock is lower than samples with RAMP
+    wilcox_test <- sapply(unique(.x$binder), function(b) {
+      wt <- wilcox.test(.x %>% filter(str_detect(interactor_comment, "RAMP"), binder == b) %>% pull(MFI),
+                        .x %>% filter(str_detect(interactor_comment, "mock"), binder == b) %>% pull(MFI),
+                        paired = F, alternative = "greater")
+      
+      return(list("df" = data.frame("binder" = b,
+                                    "p.value" = wt$p.value,
+                                    "stat" = wt$stat),
+                  "test" = wt))
+    }, simplify = F)
+    
+    wilcox_p <- lapply(wilcox_test, function(y) {y$df}) %>%
+      rbindlist() %>%
+      left_join(.x, by = "binder") %>%
+      group_by(binder) %>%
+      summarise(binder = unique(binder), p.value = unique(p.value), statistic = unique(stat),
+                y_max = log2(max(MFI)), y_pos = log2(max(MFI)) + 0.13 * plt_diff) %>%
+      mutate(p = p_to_star(p.value)) %>%
+      mutate(x_pos = 1.5) %>%
+      mutate(gpcr = GPCR_comment)
+     
+    lines_df <- rbind(wilcox_p %>% mutate(x1 = 1, x2 = 2, y1 = y_max + 0.1 * plt_diff, y2 = y_max + 0.1 * plt_diff),
+                      wilcox_p %>% mutate(x1 = 1, x2 = 1, y1 = y_max + 0.05 * plt_diff, y2 = y_max + 0.1 * plt_diff),
+                      wilcox_p %>% mutate(x1 = 2, x2 = 2, y1 = y_max + 0.05 * plt_diff, y2 = y_max + 0.1 * plt_diff))
+
+    p <- ggplot(.x, aes(x = samp, y = log2(MFI))) +
+        stat_summary(fun = median, fun.min = median, fun.max = median,
+                     geom = "errorbar", colour = "grey30", width = 0.4, size = 1.3) +
+        stat_summary(fun = median,
+                     fun.min = function(a) quantile(a, 0.25),
+                     fun.max = function(a) quantile(a, 0.75),
+                     geom = "errorbar", colour = "grey30", width = 0.25, size = 1.0) +
+        geom_beeswarm(aes(colour = samp), show.legend = F, size = 3) +
+        geom_hline(yintercept = -Inf, linewidth = 2.5) + geom_vline(xintercept = -Inf, linewidth = 2.5) +
+        geom_text(aes(x = x_pos, y = y_pos, label = p), data = wilcox_p %>% distinct(x_pos, y_pos, p, .keep_all = T) %>% select(x_pos, y_pos, p, binder), size = 9) +
+        geom_segment(aes(x = x1, xend = x2, y = y1, yend = y2), data = lines_df) +
+        facet_wrap(~ binder, drop = T, nrow = 1, scales = "free_x") +
+        scale_colour_manual(values = c("grey75", "grey60")) +
+        labs(x = NULL, y = paste0("Anti-", detection_ab, " log2(MFI)")) +
+        # Account for height increase from p-value text
+        ylim(plt_range) +
+        theme_classic() +
+        theme(axis.line = element_blank(),
+              axis.text.x = element_text(size = 20, colour = "black"),
+              axis.title = element_text(size = 20),
+              axis.text.y = element_text(size = 20, colour = "black"),
+              axis.ticks = element_line(size = 2),
+              strip.text = element_text(size = 20),
+              strip.background = element_rect(size = 2))
+
+    # Title + remove axis text for top plots
+    if (detection_ab == "1D4") {
+      p <- p + labs(title = GPCR_comment) + theme(plot.title = element_text(hjust = 0.5, size = 24),
+                                                  axis.text.x = element_blank(), axis.ticks.x = element_blank())
+    }
+
+    return(list("wilcox_test" = wilcox_test, "wilcox_p" = wilcox_p, "plots" = p))
+  }))
+
+pilot_box_p <- lapply(pilot_boxes$plt, function(x) {as.data.frame(x$wilcox_p)}) %>% data.table::rbindlist() %>%
+  select(gpcr, binder, p.value, statistic)
+pilot_boxplt <- lapply(pilot_boxes$plt, function(x) {x$plots}) %>% wrap_plots(nrow = 2)
+
+
+```
+
+```{r save pilot plots}
+pilot_bar_fn <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_pilot_bar_ramp3.pdf")
+ggsave(filename = pilot_bar_fn, plot = barplt_out, height = 6.5, width = 7.3*2, device = "pdf", useDingbats = F)
+
+pilot_bar2_fn <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_pilot_bar_calcrl.pdf")
+ggsave(filename = pilot_bar2_fn, plot = barplt_out2, height = 6.5, width = 7.3*2, device = "pdf", useDingbats = F)
+
+pilot_box_fn <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_pilot_box.pdf")
+ggsave(filename = pilot_box_fn, plot = pilot_boxplt, height = 4*2, width = 7.3*2, device = "pdf", useDingbats = F)
+
+```
+
+Pilot plots saved as `r pilot_bar_fn` and `r pilot_box_fn`. 
+
+Expression validation of positive control
+-----------------------------------------
+
+Figure S4 (B and C)
+
+```{r}
+plt_range <- c(3.9, 15)
+textsize <- 11
+extra_theme <- theme(axis.line = element_blank(),
+                     axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = textsize, colour = "black"),
+                     axis.text.y = element_text(size = textsize, colour = "black"),
+                     axis.title = element_text(size = textsize),
+                     strip.text = element_text(size = 9),
+                     strip.background = element_rect(size = 1.5, linetype = "solid", colour = "black"),
+                     axis.ticks = element_line(size = 0.5))
+
+# Complex (capture and detection on different sides)
+posctrl1_dat <- rdat$long_dat_all %>%
+  filter((gene_name %in% c("RAMP1", "M anti-HA", "Ollas") & detection_ab == "1D4") |
+         (gene_name %in% c("CALCRL", "M anti-FLAG", "1D4") & detection_ab == "OLLAS")) %>%
+  filter(gpcr_interactor %in% c("empty.empty", "mock.mock", "CALCRL.RAMP1.posctrl")) %>%
+  filter(sample_type != "gpcr.p11") %>%
+  # Facet and x-axis orders
+  mutate(gene_name = str_remove(gene_name, "M anti-") %>% toupper() %>% paste0(., " capture"),
+         gene_name = factor(gene_name, levels = paste0(c("RAMP1", "HA", "OLLAS", "CALCRL", "FLAG", "1D4"), " capture")),
+         gpcr_interactor = str_remove(gpcr_interactor, "\\.posctrl"),
+         gpcr_interactor = factor(gpcr_interactor, levels = c("empty.empty", "mock.mock", "CALCRL.RAMP1"))) %>%
+  select(gpcr_interactor, gene_name, detection_ab, value)
+
+posctrl1_tests <- posctrl1_dat %>%
+  group_by(detection_ab, gene_name) %>%
+  nest() %>%
+  mutate(p = map(data, ~ {
+    # Anova
+    ap <- summary(aov(value ~ gpcr_interactor, data = .x))[[1]] %>% as.data.frame() %>% mutate(Capture = str_remove(gene_name, " capture"))
+    
+    # Dunnett's multiple comparison test
+    dp <- DunnettTest(x = .x$value, g = as.factor(.x$gpcr_interactor), control = "mock.mock")$mock.mock %>%
+      as.data.frame() %>% rownames_to_column("gpcr_interactor") %>%
+      mutate(gpcr_interactor = str_remove(gpcr_interactor, "-mock.mock")) %>%
+      mutate(capture = str_remove(gene_name, " capture"),
+             detection = detection_ab) %>%
+      left_join(count(.x, gpcr_interactor), by = "gpcr_interactor")
+    
+    # y positions of labels
+    p_ypos <- .x %>% filter(gpcr_interactor != "mock.mock") %>% group_by(gpcr_interactor) %>%
+      summarise(ypos = max(log2(value), na.rm = T) + 0.05 * diff(plt_range)) %>% ungroup() %>%
+      mutate("gene_name" = gene_name,
+             "detection_ab" = detection_ab,
+             "anova_p" = ap[1, 5],
+             # NA if anova p >= 0.05
+             "pval" = case_when(ap[1, 5] < 0.05 ~ dp[match(gpcr_interactor, dp$gpcr_interactor), "pval", drop = T]),
+             "pstar" = p_to_star(pval))
+    
+    return(list("anova_p" = ap,
+                "dunnett_p" = dp,
+                "ypos" = p_ypos))
+  })) %>%
+  pull(p)
+
+posctrl1_anova <- lapply(posctrl1_tests, function(x) {as.data.frame(x$anova_p)[1, ]}) %>% data.table::rbindlist()
+posctrl1_dunnett <- lapply(posctrl1_tests, function(x) {x$dunnett_p}) %>% data.table::rbindlist()
+
+posctrl1_p <- lapply(posctrl1_tests, function(x) {x$ypos}) %>%
+  data.table::rbindlist() %>%
+  # Avoid same name for detab column
+  rename("detab" = "detection_ab")
+
+posctrl1 <- posctrl1_dat %>%
+  group_by(detection_ab) %>%
+  nest() %>%
+  mutate(plt = map(data, ~ {
+    plt_out <- ggplot(.x %>% mutate(detab = paste0(detection_ab, " detection")), aes(x = gpcr_interactor, y = log2(value))) +
+      geom_beeswarm(aes(colour = gpcr_interactor), show.legend = F, size = 1.5) +
+      geom_text(aes(x = gpcr_interactor, y = ypos, label = pstar),
+                posctrl1_p %>% filter(detab == detection_ab) %>% mutate(detab = paste0(detab, " detection")), size = 5) +
+      scale_colour_manual(values = c("empty.empty" = "grey80", "mock.mock" = "grey75", "CALCRL.RAMP1" = "#BFEFFF")) +
+      stat_summary(fun = median, fun.min = median, fun.max = median,
+                   geom = "errorbar", colour = "grey50", width = 0.35, size = 0.8) +
+      stat_summary(fun = median,
+                   fun.min = function(a) quantile(a, 0.25),
+                   fun.max = function(a) quantile(a, 0.75),
+                   geom = "errorbar", colour = "grey50", width = 0.2, size = 0.65) +
+      geom_hline(yintercept = -Inf, size = 1.5) + geom_vline(xintercept = -Inf, size = 1.5) +
+      labs(x = NULL, y = "log2(MFI)") +
+      ylim(plt_range) +
+      facet_grid(cols = vars(gene_name), rows = vars(detab)) +
+      theme_classic() +
+      extra_theme
+    
+    # If upper plot, skip axis labels
+    if (detection_ab == "1D4") {
+      plt_out <- plt_out + theme(axis.text.x = element_blank(),
+                                 axis.ticks.x = element_blank())
+    }
+    
+    return(plt_out)
+  })) %>%
+  pull(plt) %>%
+  wrap_plots(nrow = 2)
+
+# Single molecules (capture and detection on same side)
+posctrl2_dat <- rdat$long_dat_all %>%
+  filter((gene_name %in% c("CALCRL", "M anti-FLAG") & detection_ab == "1D4") |
+         (gene_name %in% c("RAMP1", "M anti-HA") & detection_ab == "OLLAS")) %>%
+  filter(gpcr_interactor %in% c("empty.empty", "mock.mock", "CALCRL.RAMP1.posctrl")) %>%
+  filter(sample_type != "gpcr.p11") %>%
+  mutate(gene_name = str_remove(gene_name, "M anti-") %>% paste0(., " capture"),
+         gene_name = factor(gene_name, levels = paste0(c("CALCRL", "FLAG", "RAMP1", "HA"), " capture")),
+         gpcr_interactor = str_remove(gpcr_interactor, "\\.posctrl"),
+         gpcr_interactor = factor(gpcr_interactor, levels = c("empty.empty", "mock.mock", "CALCRL.RAMP1"))) %>%
+  select(gpcr_interactor, gene_name, detection_ab, value)
+
+posctrl2_tests <- posctrl2_dat %>%
+  group_by(detection_ab, gene_name) %>%
+  nest() %>%
+  mutate(p = map(data, ~ {
+    # Anova
+    ap <- summary(aov(value ~ gpcr_interactor, data = .x))[[1]] %>% as.data.frame() %>% mutate(Capture = str_remove(gene_name, " capture"))
+    
+    # Dunnett's multiple comparison test
+    dp <- DunnettTest(x = .x$value, g = as.factor(.x$gpcr_interactor), control = "mock.mock")$mock.mock %>%
+      as.data.frame() %>% rownames_to_column("gpcr_interactor") %>% mutate(gpcr_interactor = str_remove(gpcr_interactor, "-mock.mock")) %>%
+      mutate(capture = str_remove(gene_name, " capture"),
+             detection = detection_ab) %>%
+      left_join(count(.x, gpcr_interactor), by = "gpcr_interactor")
+    
+    # y positions of labels
+    p_ypos <- .x %>% filter(gpcr_interactor != "mock.mock") %>% group_by(gpcr_interactor) %>%
+      summarise(ypos = max(log2(value), na.rm = T) + 0.05 * diff(plt_range)) %>% ungroup() %>%
+      mutate("gene_name" = gene_name,
+             "detection_ab" = detection_ab,
+             "anova_p" = ap[1, 5],
+             # NA if anova p >= 0.05
+             "pval" = case_when(ap[1, 5] < 0.05 ~ dp[match(gpcr_interactor, dp$gpcr_interactor), "pval", drop = T]),
+             "pstar" = p_to_star(pval))
+    
+    return(list("anova_p" = ap,
+                "dunnett_p" = dp,
+                "ypos" = p_ypos))
+  })) %>%
+  pull(p)
+
+posctrl2_anova <- lapply(posctrl2_tests, function(x) {as.data.frame(x$anova_p)[1, ]}) %>% data.table::rbindlist()
+posctrl2_dunnett <- lapply(posctrl2_tests, function(x) {x$dunnett_p}) %>% data.table::rbindlist()
+
+posctrl2_p <- lapply(posctrl2_tests, function(x) {x$ypos}) %>%
+  data.table::rbindlist() %>%
+  # Avoid same name for detab column
+  rename("detab" = "detection_ab")
+
+posctrl2 <- posctrl2_dat %>%
+  group_by(detection_ab) %>%
+  nest() %>%
+  mutate(plt = map(data, ~ {
+    plt_out <- ggplot(.x %>% mutate(detab = paste0(detection_ab, " detection")), aes(x = gpcr_interactor, y = log2(value))) +
+      geom_beeswarm(aes(colour = gpcr_interactor), show.legend = F, size = 1.5) +
+      geom_text(aes(x = gpcr_interactor, y = ypos, label = pstar),
+                posctrl2_p %>% filter(detab == detection_ab) %>% mutate(detab = paste0(detab, " detection")), size = 5) +
+      scale_colour_manual(values = c("empty.empty" = "grey80", "mock.mock" = "grey75", "CALCRL.RAMP1" = "#BFEFFF")) +
+      stat_summary(fun = median, fun.min = median, fun.max = median,
+                   geom = "errorbar", colour = "grey50", width = 0.35, size = 0.8) +
+      stat_summary(fun = median,
+                   fun.min = function(a) quantile(a, 0.25),
+                   fun.max = function(a) quantile(a, 0.75),
+                   geom = "errorbar", colour = "grey50", width = 0.2, size = 0.65) +
+      geom_hline(yintercept = -Inf, size = 1.5) + geom_vline(xintercept = -Inf, size = 1.5) +
+      ylim(plt_range) +
+      facet_grid(cols = vars(gene_name), rows = vars(detab)) +
+      labs(x = NULL, y = "log2(MFI)") +
+      theme_classic() +
+      extra_theme
+    
+    # If upper plot, skip axis labels
+    if (detection_ab == "1D4") {
+      plt_out <- plt_out + theme(axis.text.x = element_blank(),
+                                 axis.ticks.x = element_blank())
+    }
+    
+    return(plt_out)
+  })) %>%
+  pull(plt) %>%
+  wrap_plots(nrow = 2)
+
+posctrl_plts <- wrap_plots(list(posctrl2, posctrl1), widths = c(2/5, 3/5))
+
+```
+
+```{r}
+posctrl_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_posctrl_plt.pdf")
+ggsave(filename = posctrl_name, plot = posctrl_plts, width = 7.3, height = 4, device = "pdf", useDingbats = F)
+```
+
+
+Plots from endogenous experiments
+=================================
+
+Often referred to as "validation" experiments and data below.
+
+```{r}
+
+# Exclude binders that did not pass validation
+vd <- valid_dat # Keep HPA008070 for QC plots
+np_binders <- rzdat$prot %>% filter(!pass) %>% pull(antibody)
+valid_dat$data_list$prot <- valid_dat$data_list$prot %>% filter(!Antibody.name %in% np_binders)
+valid_dat$data_list$mfi <- valid_dat$data_list$mfi %>% select(samp_name, !!valid_dat$data_list$prot$gene_name_id)
+```
+
+Max signal hits
+---------------
+
+Figure 3 (B and C)
+
+```{r}
+hit_check <- valid_hits(valid_dat, T)
+
+# Make combined plots of selected plots
+extra_plts <- function(dat, nrow, ncol) {
+  # Find axis limits to use
+  d <- dat %>% mutate(min = map(tbl, ~ {min(.x$mean_z)}),
+                      max = map(tbl, ~ {max(.x$mean_z)}))
+  lims <- c(min(unlist(d$min)), max(unlist(d$max)))
+  
+  # Put all plots into one with those limits
+  wrap_plots(d$plt, nrow = nrow, ncol = ncol) & ylim(lims)
+}
+
+# One per RAMP
+endog_plts <- sapply(paste0("RAMP", 1:3), function(x) {
+  extra_plts(hit_check %>% filter(gpcr_ramp == "untransfected_untransfected", detection_ab == x) %>%
+               arrange(cell_type), nrow = 1, ncol = 3)
+}, simplify = F, USE.NAMES = T)
+
+# Venn diagrams
+hits <- hit_check %>% filter(gpcr_ramp == "untransfected_untransfected") %>%
+  select(-plt, -tbl) %>% group_by(detection_ab) %>% nest() %>%
+  mutate(hit_list = map(data, ~ {
+    hits_out <- pull(.x, hits)
+    names(hits_out) <- .x$cell_type
+    
+    return(hits_out)
+  })) %>%
+  pull(hit_list)
+hit_venn <- lapply(seq_along(hits), function(x) {
+  ggvenn(hits[[x]], names(hits[[x]]),
+         stroke_color = switch(x, "1" = "#BFEFFF", "2" = "#B1E063", "3" = "#EEAD0E"),
+         stroke_size = 1.75, fill_alpha = 0.25, text_size = 3, set_name_size = 5, show_percentage = T)
+})
+
+dsgn <- "
+ABCD
+EFGH
+IJKL
+"
+
+hit_bsw_venn_plt <- wrap_plots(
+  list(
+    endog_plts[[1]][[1]] + labs(tag = "A") + labs(y = NULL) + theme(plot.title = element_text(size = 12, hjust = 0.5)),
+    endog_plts[[1]][[2]] + labs(y = NULL) + theme(plot.title = element_text(size = 12, hjust = 0.5)),
+    endog_plts[[1]][[3]] + labs(y = NULL) + theme(plot.title = element_text(size = 12, hjust = 0.5)),
+    plot_spacer(),
+    endog_plts[[2]][[1]] + labs(tag = "B", title = NULL, y = NULL),
+    endog_plts[[2]][[2]] + labs(title = NULL, y = NULL),
+    endog_plts[[2]][[3]] + labs(title = NULL, y = NULL),
+    plot_spacer(),
+    endog_plts[[3]][[1]] + labs(tag = "C", title = NULL, y = NULL),
+    endog_plts[[3]][[2]] + labs(title = NULL, y = NULL),
+    endog_plts[[3]][[3]] + labs(title = NULL, y = NULL),
+    plot_spacer()
+  ),
+  design = dsgn
+)
+
+```
+
+```{r}
+
+for (i in 1:3) {
+  plt_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_max_hits_venn_RAMP", i, ".pdf")
+  pdf(file = plt_name, width = 3, height = 3, useDingbats = F)
+  print(hit_venn[[i]])
+  dev.off()
+}
+
+hit_bsw_venn_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_valid_bsw_venn.pdf")
+ggsave(filename = hit_bsw_venn_name, plot = hit_bsw_venn_plt, height = 3.5, width = 7.25, device = "pdf", useDingbats = F)
+
+```
+
+Table S8
+
+```{r}
+# Save a table of hits
+hit_tbl <- hit_check %>% select(detection_ab, cell_type, gpcr_ramp, tbl) %>% unnest(tbl) %>%
+  filter(point_lab != "") %>% as.data.frame() %>% select(-point_lab) %>%
+  filter(gpcr_ramp == "untransfected_untransfected") %>%
+  group_by(detection_ab) %>% nest() %>% mutate(tbl = map(data, ~ {
+    .x %>% pivot_wider(id_cols = binder, names_from = cell_type, values_from = mean_z) %>%
+      left_join(valid_dat$data_list$prot %>% select(Gene, Antibody.name, gene_name_id), by = c("binder" = "gene_name_id")) %>%
+      select(-binder) %>% relocate(Gene, Antibody.name) %>% rename(GPCR = Gene, Antibody = Antibody.name) %>%
+      # Remove the AC144573.1 part of the ADRB3 Ab as it's the same Ab as the one in the main screen but there it only has ADRB3 as annotation
+      mutate(GPCR = str_remove(GPCR, "AC144573\\.1;")) %>% arrange(GPCR)
+  })) %>% select(-data)
+
+# Make table with multiple tabs
+tbl_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_validation_hits.xlsx")
+write.xlsx(hit_tbl %>% pull(tbl) %>% setNames(hit_tbl$detection_ab), tbl_name, asTable = T, tableStyle = "TableStyleLight1")
+```
+
+Figure 3 (D)
+
+```{r, fig.height=4, fig.width=7.3}
+# Compare main screen to validation hits
+# Mark how the GPCRs interacted in the endogenous analysis
+cell_sym <- c("Expi" = "×", "SH-SY5Y" = "◾", "SK-N-MC" = "▴")
+hit_gpcrs <- hit_check %>% select(detection_ab, cell_type, gpcr_ramp, tbl) %>% unnest(tbl) %>%
+  filter(point_lab != "") %>% as.data.frame() %>% select(-point_lab) %>% filter(gpcr_ramp == "untransfected_untransfected") %>%
+  # Deal with a special case that contains a dot in the name (usually dots separate different GPCRs)
+  mutate(target = str_remove(binder, "_\\d+") %>% str_replace("AC144573\\.", "AC144573_")) %>%
+  separate_rows(target, sep = "\\.") %>%
+  mutate(target = str_replace(target, "AC144573_", "AC144573.")) %>%
+  group_by(detection_ab, target) %>%
+  # Extra info to mark heatmap cells
+  summarise(cells = unique(cell_type) %>% sort() %>%
+              str_replace_all(., cell_sym) %>% paste0(collapse = ""),
+            binders = paste0(unique(binder), collapse = ";"))
+
+valid_hits_hm_dat <- rbind(
+  cxdet_cd_sep$interaction_evidence %>% filter(which_gpcr %in% hit_gpcrs$target) %>% mutate(capt = "Epitope") %>% select(-fraction_pass),
+  cxdet_dens_res$interaction_evidence %>% filter(which_gpcr %in% hit_gpcrs$target) %>% mutate(capt = "Protein") %>% select(-fraction_pass)
+) %>% left_join(hit_gpcrs, by = c("which_gpcr" = "target", "which_ramp" = "detection_ab")) %>%
+  mutate(int_evid = factor(int_evid, levels = c("Strong", "Medium", "Weak")),
+         which_gpcr = factor(which_gpcr, levels = sort(unique(which_gpcr), decreasing = T))) %>%
+  # Keep those with values for both epitope and protein capture
+  group_by(which_gpcr) %>% filter(if (length(capt) < 4) {F} else {T}) %>% ungroup() %>% as.data.frame()
+# Add a dummy variable that will allow creating a custom legend for the cell types
+valid_hits_hm_dat$dummy <- c("Expi", "SH-SY5Y", "SK-N-MC")
+
+gpcr_order <- valid_hits_hm_dat %>%
+  mutate(int_sc = case_when(int_evid == "Strong" ~ 3, int_evid == "Medium" ~ 2, int_evid == "Weak" ~ 1)) %>%
+  group_by(which_gpcr) %>%
+  summarise(sc = sum(int_sc)) %>%
+  arrange(desc(sc)) %>%
+  pull(which_gpcr)
+
+valid_hits_hm <- valid_hits_hm_dat %>%
+  # Arrange by strongest interaction evidence
+  mutate(which_gpcr = factor(which_gpcr, levels = gpcr_order)) %>%
+  ggplot(aes(x = which_gpcr, y = capt)) +
+  geom_tile(aes(fill = int_evid), colour = "white") +
+  geom_text(aes(label = cells, alpha = dummy), size = 2.5) +
+  facet_wrap(~ which_ramp, ncol = 1) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_alpha_manual("Cell type", values = 1:3,
+                     guide = guide_legend(override.aes = list(size = 5,
+                                                              fill = "white",
+                                                              label = cell_sym))) +
+  labs(x = "GPCR", y = "Capture", fill = "Evidence of\ninteraction") +
+  theme_minimal() +
+  theme(axis.title = element_text(size = 10),
+        strip.text = element_text(size = 10),
+        axis.text.x = element_text(size = 8, colour = "black", angle = 45, hjust = 1, vjust = 1),
+        axis.text.y = element_text(size = 8, colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8))
+
+```
+
+```{r}
+valid_hm_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_validation_hits_hm.pdf")
+ggsave(filename = valid_hm_name, plot = valid_hits_hm, width = 6.25, height = 3, device = cairo_pdf)
+```
+
+CALCRL check
+------------
+
+Figure S8
+
+```{r}
+valid_clr_dat <- vd$data_list$mfi %>%
+  # Look at the two CALCRL binders
+  select(samp_name, contains("CALCRL")) %>%
+  # Add sample information
+  left_join(vd$data_list$well_info %>%
+              select(samp_name, exclude, cell_type, gpcr, ramp, detection_ab), by = "samp_name") %>%
+  # Only look at empty samples and Expi samples
+  filter(is.na(exclude), cell_type %in% c("buffer", "Expi"), gpcr %in% c("CALCRL")) %>%
+  select(-exclude, -cell_type) %>%
+  unite("gpcr_ramp", gpcr, ramp, sep = ".") %>%
+  pivot_longer(cols = -c(samp_name, gpcr_ramp, detection_ab), names_to = "binder", values_to = "value") %>%
+  # Add antibody names
+  left_join(vd$data_list$prot %>%
+              select(Antibody.name, Gene, gene_name_id), by = c("binder" = "gene_name_id")) %>%
+  unite("antibody", Gene, Antibody.name) %>%
+  # Set x-axis order
+  mutate(gpcr_ramp = str_remove(gpcr_ramp, "CALCRL\\.") %>% str_replace("mock", "Mock"),
+         gpcr_ramp = factor(gpcr_ramp, levels = c("Mock", "RAMP1", "RAMP2", "RAMP3")))
+
+# Anova and Dunnett test against CALCRL.mock
+valid_clr_test <- valid_clr_dat %>%
+  group_by(antibody, detection_ab) %>%
+  nest() %>%
+  mutate(anova = map(data, ~ {
+    summary(aov(value ~ gpcr_ramp, data = .x))[[1]] %>% as.data.frame() %>% mutate(Capture = antibody, Detection = detection_ab) %>% filter(!is.na(`F value`))
+  }), dunnett = map(data, ~ {
+    counts <- .x %>% count(gpcr_ramp)
+    
+    DunnettTest(x = .x$value, g = as.factor(.x$gpcr_ramp), control = "Mock")$Mock %>%
+      as.data.frame() %>% rownames_to_column("gpcr_ramp") %>%
+      mutate(gpcr_ramp = str_remove(gpcr_ramp, "-Mock")) %>%
+      mutate(capture = antibody, detection = detection_ab) %>%
+      left_join(counts, by = "gpcr_ramp")
+  }), plt_pos = map2(data, dunnett, ~ {
+    # Positions of p-values in plot
+    .x %>% group_by(gpcr_ramp) %>% summarise(ymax = max(value)) %>%
+      left_join(.y %>% select(gpcr_ramp, pval), by = "gpcr_ramp") %>%
+      filter(!is.na(pval)) %>%
+      mutate(antibody = antibody, detection_ab = detection_ab,
+             # Convert p-values to stars
+             pval = p_to_star(pval),
+             # Add some extra space (as a proportion of the range of the whole data) to have the text above the points
+             # Compute in log2-scale since plotting is in log2-scale
+             ypos = 2**(log2(ymax) + 0.05 * log2(diff(range(valid_clr_dat$value)))))
+  }))
+
+valid_clr_plt <- ggplot(valid_clr_dat, aes(x = gpcr_ramp, y = value)) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 2, linetype = "dotted") +
+  geom_beeswarm(aes(colour = detection_ab), show.legend = F) +
+  geom_text(data = rbindlist(valid_clr_test$plt_pos),
+            aes(y = ypos, label = pval), size = 5) +
+  facet_grid2(rows = vars(detection_ab), cols = vars(antibody), axes = "all", remove_labels = T) +
+  labs(x = "Interactor", y = "Signal-to-noise ratio", title = "Capture") +
+  scale_colour_manual(values = c("OLLAS" = "#BFBFBF", "RAMP1" = "#BFEFFF", "RAMP2" = "#B1E063", "RAMP3" = "#EEAD0E")) +
+  scale_y_continuous(trans = "log2", breaks = c(1, 4, 16, 64)) +
+  theme_classic(14) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14))
+
+# Extra text to the right for axis title
+text_right <- ggplot(data.frame(a = "Detection", x = 1, y = 1)) +
+  geom_text(aes(x = x, y = y, label = a), angle = -90, size = 5.5) +
+  theme_void() +
+  coord_cartesian(clip = "off")
+valid_clr_plt <- valid_clr_plt + text_right + plot_layout(widths = c(22, 1))
+
+```
+
+```{r}
+valid_clr_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_validation_CALCRL.pdf")
+ggsave(valid_clr_name, valid_clr_plt, width = 7.25, height = 8.5, device = "pdf", useDingbats = F)
+```
+
+Endogenous RAMP
+---------------
+
+Figure S9
+
+```{r}
+endog_ramp <- valid_dat$data_list$mfi %>%
+  select(samp_name, contains("RAMP")) %>%
+  # Add sample information
+  left_join(valid_dat$data_list$well_info %>%
+              select(samp_name, exclude, cell_type, gpcr, ramp, detection_ab), by = "samp_name") %>%
+  # Look at untransfected cells vs buffer, RAMP capture with RAMP detection
+  filter(is.na(exclude), !cell_type %in% c("HUVEC"), ramp %in% c("untransfected", "empty"), detection_ab != "OLLAS") %>%
+  mutate(cell_type = case_when(cell_type == "buffer" ~ "Buffer", T ~ cell_type)) %>%
+  select(-exclude) %>%
+  pivot_longer(cols = -c(samp_name, cell_type, gpcr, ramp, detection_ab), names_to = "binder", values_to = "value") %>%
+  # Add antibody names
+  left_join(valid_dat$data_list$prot %>%
+              select(Antibody.name, Gene, gene_name_id), by = c("binder" = "gene_name_id")) %>%
+  unite("gene_name_ab", Gene, Antibody.name, remove = F) %>%
+  # Look at capture and detection of the same kind of RAMP
+  filter(Gene == detection_ab) %>%
+  # A few buffer only samples get NaN values, remove those
+  filter(!is.na(value)) %>%
+  # Remove some kind of trailing special space character, indistinguishable from a normal space but not detected by trimws, from the RAMP1 Ab name
+  mutate(gene_name_ab = str_remove(gene_name_ab, "\\s")) %>%
+  group_by(gene_name_ab) %>%
+  nest() %>%
+  mutate(anova = map(data, ~ {
+    summary(aov(value ~ cell_type, data = .x))[[1]] %>% as.data.frame() %>% mutate(Capture = gene_name_ab) %>% filter(!is.na(`F value`))
+  })) %>%
+  mutate(dunnett = map(data, ~ {
+    counts <- .x %>% count(cell_type)
+    detection <- switch(str_extract(gene_name_ab, "RAMP\\d"),
+                        "RAMP1" = "RAMP1_AF6428", "RAMP2" = "RAMP2_AF6427", "RAMP3" = "RAMP3_AF4875")
+    
+    DunnettTest(x = .x$value, g = as.factor(.x$cell_type), control = "Buffer")$Buffer %>%
+      as.data.frame() %>% rownames_to_column("cell_type") %>%
+      mutate(cell_type = str_remove(cell_type, "-Buffer")) %>%
+      left_join(counts, by = "cell_type") %>%
+      mutate(capture = gene_name_ab, detection = detection)
+  })) %>%
+  mutate(plt = map2(data, dunnett, ~ {
+    plt_out <- ggplot(.x, aes(x = cell_type, y = value)) +
+      geom_hline(yintercept = 1, linetype = "dashed") +
+      geom_hline(yintercept = 1.5, linetype = "dotted") +
+      geom_beeswarm() +
+      scale_fill_manual(values = c("empty" = "grey", "untransfected" = "black")) +
+      labs(x = NULL, y = NULL, title = gene_name_ab) +
+      theme_classic(14) +
+      theme(plot.title = element_text(hjust = 0.5, size = 12),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+    
+    # Positions of p-values
+    p_pos <- .x %>% group_by(cell_type) %>% summarise(max_y = max(value)) %>%
+      right_join(.y %>% select(cell_type, pval), by = "cell_type") %>%
+      mutate(y_pos = max_y + 0.1 * diff(range(.x$value)),
+             p_star = p_to_star(pval))
+
+    # No x-axis labels if top plot (apart from RAMP3)
+    if (gene_name_ab %in% c("RAMP1_HPA010654", "RAMP2_HPA064452")) {
+      plt_out <- plt_out + theme(axis.text.x = element_blank())
+    }
+    
+    # Adjust scales for some plots to be more comparable
+    if (gene_name_ab %in% c("RAMP1_HPA010654", "RAMP1_AF6428", "RAMP2_AF6427")) {
+      plt_out <- plt_out + ylim(0.5, 3) +
+        # Adjust p-value position for adjusted scale
+        geom_text(data = p_pos %>% mutate(y_pos = max_y + 0.1 * diff(range(c(0.5, 3)))), aes(x = cell_type, y = y_pos, label = p_star))
+    }
+    # Add p-values to plot not included in previous if statements (no if else due to overlaps)
+    if (gene_name_ab %in% c("RAMP2_HPA064452", "RAMP3_AF4875")) {
+      plt_out <- plt_out + geom_text(data = p_pos, aes(x = cell_type, y = y_pos, label = p_star))
+    }
+
+    return(plt_out)
+  }))
+
+# Extra text to the right for axis title
+text_left <- ggplot(data.frame(a = "Signal-to-noise ratio", x = 1, y = 1)) +
+  geom_text(aes(x = x, y = y, label = a), angle = 90, size = 5) +
+  theme_void() +
+  coord_cartesian(clip = "off")
+endog_ramp_plt <-
+  text_left +
+  (endog_ramp$plt[[1]] / endog_ramp$plt[[2]]) +
+  (endog_ramp$plt[[3]] / endog_ramp$plt[[4]]) +
+  (endog_ramp$plt[[5]] + plot_spacer() + plot_layout(heights = c(1.3, 1))) +
+  plot_layout(widths = c(1, 9, 9, 9))
+```
+
+```{r}
+endog_ramp_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_endog_ramp.pdf")
+ggsave(endog_ramp_name, endog_ramp_plt, width = 7.25, height = 5, device = "pdf", useDingbats = F)
+```
+
+MolBoolean statistical analysis
+===============================
+
+Perform Anova and Dunnett test for the MolBoolean results
+
+```{r}
+molbol <- list(
+  "supl10a" = read_excel("molboolean.xlsx", sheet = "Figure S10A", n_max = 9),
+  "main4b" = read_excel("molboolean.xlsx", sheet = "Fig 4B", n_max = 9)
+) %>%
+  map(., ~ {
+    # Make long format data
+    mb_long <- .x %>% mutate(across(everything(), as.numeric)) %>% rownames_to_column("rn") %>%
+      pivot_longer(cols = -rn) %>% filter(!is.na(value))
+    
+    # Statistical tests (Anova, Dunnett test)
+    ap <- summary(aov(value ~ name, data = mb_long))[[1]] %>% as.data.frame() %>% slice(1)
+    dp <- DunnettTest(x = mb_long$value, g = as.factor(mb_long$name),
+                      control = ifelse(any(str_detect(mb_long$name, "overlap")),
+                      "overlap CALCRL+RAMP1", "CALCRL+RAMP2"))[[1]] %>%
+      as.data.frame() %>% rownames_to_column("rn") %>% mutate(rn = str_remove_all(rn, "overlap *")) %>%
+      separate(col = rn, into = c("comparison", "control"), sep = "-") %>%
+      # Add sample sizes
+      left_join(count(mb_long, name) %>% mutate(name = str_remove_all(name, "overlap *")),
+                by = c("comparison" = "name"))
+    
+    return(list("anova" = ap, "dunnett" = dp))
+  })
+
+```
+
+
+P-values table
+==============
+
+```{r}
+# Load p-values from expression analysis (from a different script)
+cell_expr_p <- read_csv("fig_s12_pval.csv", show_col_types = F) %>%
+  select(ramp = which_ramp, p.value = p_value, statistic)
+
+# Compile p-values from tests into one table, with sheets named after which figure panel they are relevant to
+pval_tbl <- list(
+  "explanation" = data.frame(
+    "sheet" = c("...anova", "...dunnett", "...wilcoxon", "...fisher"),
+    "explanation" = c("Anova test results from the aov() and summary() functions. Contain the capture method (Capture, not for the MolBoolean assays, fig.4 and S10), degrees of freedom (Df), sums (Sum Sq) and means (Mean Sq) of squares, the test statistic (F value), and P-value (Pr(>F)).",
+                      "Dunnett test results from the DunnettTest() function, testing samples (called interactor, gpcr_interactor, or comparison) against controls. Contain the capture and detection methods (capture, detection, if relevant), the number of samples of the sample type being tested (n), the difference in observed means (diff), the 95% confidence interval (lwr.ci, upr.ci), and the P-value (pval).",
+                      "Wilcoxon rank-sum test results using the wilcox.test() function. Contains the comparison (gpcr, ramp), the capture method if applicable (capture), the P-value (p.value), and the test statistic (statistic).",
+                      "Fisher test p-values (p.value) from the fisher.test function, comparing G protein and beta arrestin couplings between interacting and non-interacting GPCRs.")
+  ),
+  "fig.4B.anova" = molbol$main4b$anova %>% remove_rownames(),
+  "fig.4B.dunnett" = molbol$main4b$dunnett %>% relocate(comparison, control, n),
+  "fig.S3.wilcoxon" = pilot_box_p %>% rename(capture = binder) %>% mutate(panel = case_when(gpcr == "GPRC5A" ~ "A", gpcr == "HCRTR2" ~ "B"), .before = 1) %>% arrange(panel),
+  "fig.S4A.anova" = ramp_expr_anova_p %>% relocate(Capture),
+  "fig.S4A.dunnett" = ramp_expr_dunnett_p %>% relocate(interactor, capture, n),
+  "fig.S4B.anova" = posctrl2_anova %>% relocate(Capture),
+  "fig.S4B.dunnett" = posctrl2_dunnett %>% relocate(gpcr_interactor, capture, detection, n),
+  "fig.S4C.anova" = posctrl1_anova %>% relocate(Capture),
+  "fig.S4C.dunnett" = posctrl1_dunnett %>% relocate(gpcr_interactor, capture, detection, n),
+  "fig.S8.anova" = valid_clr_test$anova %>% rbindlist() %>% relocate(Capture, Detection),
+  "fig.S8.dunnett" = valid_clr_test$dunnett %>% rbindlist() %>% rename(gpcr_interactor = gpcr_ramp) %>% relocate(gpcr_interactor, capture, detection, n),
+  "fig.S9.anova" = endog_ramp$anova %>% rbindlist() %>% relocate(Capture),
+  "fig.S9.dunnett" = endog_ramp$dunnett %>% rbindlist() %>% relocate(cell_type, capture, detection, n),
+  "fig.S10A.anova" = molbol$supl10a$anova %>% remove_rownames(),
+  "fig.S10A.dunnett" = molbol$supl10a$dunnett %>% relocate(comparison, control, n),
+  "fig.S12A.wilcoxon" = cell_expr_p,
+  "fig.S13.fisher" = data.frame(
+    "panel" = c("A", "A", "B", "C"),
+    "comparison" = c("Primary", "Secondary", "", ""),
+    "p.value" = c(gprot_plt$p %>% filter(value == "Primary") %>% pull(p),
+                  gprot_plt$p %>% filter(value == "Secondary") %>% pull(p),
+                  gprot_prim$p$p,
+                  arr_plt$p$p)
+  )
+)
+```
+
+```{r}
+pval_tbl_name <- paste0(out_dir, format(Sys.time(),"%Y-%m-%d_%H%M%S"), "_pval_tbl.xlsx")
+write.xlsx(pval_tbl, pval_tbl_name, asTable = T, tableStyle = "TableStyleLight1")
+```
+
+
+Session information
+===================
+
+```{r session information}
+sessionInfo()
+```
