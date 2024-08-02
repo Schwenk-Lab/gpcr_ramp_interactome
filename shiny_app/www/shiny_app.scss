@@ -31,3 +31,11 @@ hr.sidebarhr {
   height: 1px;
   background-color: #2C3E50;
 }
+
+summary {
+  font-weight: bold;
+}
+
+details[open] summary {
+  font-weight: bold;
+}

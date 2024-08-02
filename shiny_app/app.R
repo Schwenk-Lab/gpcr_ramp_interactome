@@ -36,27 +36,27 @@ ui <- fluidPage(
     tabPanel(
       strong("GPCR-RAMP interactome Study"),
       HTML("Companion app to<h2><i>Multiplexed Mapping of the Interactome of GPCRs with Receptor Activity-Modifying Proteins</i></h2>"),
-      HTML("Ilana B. Kotliar, Annika Bendes, Leo Dahl, Yuanhuang Chen, Marcus Saarinen, Emilie Ceraudo, Tea Dodig-Crnković, Mathias Uhlén, Per Svenningsson, Jochen M. Schwenk, Thomas P. Sakmar"),
+      HTML("Ilana B. Kotliar, Annika Bendes, Leo Dahl, Yuanhuang Chen, Marcus Saarinen, Emilie Ceraudo, Tea Dodig-Crnković, Mathias Uhlén, Per Svenningsson, Jochen M. Schwenk, Thomas P. Sakmar"), br(),
+      HTML("<a href='https://doi.org/10.1126/sciadv.ado9959' target='_blank' rel='noopener noreferrer'><strong>https://doi.org/10.1126/sciadv.ado9959</strong></a>"),
       h3("About"),
-      HTML("<p><strong>Receptor activity-modifying proteins (RAMPs)</strong> can form complexes with G protein-coupled receptors (GPCRs) 
-           and regulate their cellular trafficking and pharmacology. RAMP interactions have been identified for about 
-           50 GPCRs, but only a few GPCR-RAMP complexes have been studied in detail. To elucidate a complete interactome 
-           between GPCRs and the three RAMPs, we developed a customized library of 215 Dual Epitope-Tagged (DuET) GPCRs 
-           representing all GPCR subfamilies. Using a multiplexed suspension bead array (SBA) assay, we identified 122 
-           GPCRs that showed strong evidence for interaction with at least one RAMP. We screened for native interactions 
-           in three cell lines and found 23 GPCRs that formed complexes with RAMPs. Mapping the GPCR-RAMP interactome 
-           expands the current system-wide functional characterization of RAMP-interacting GPCRs to inform the design 
-           of selective GPCR-targeted therapeutics.</p>"),
+      HTML("<p><strong>Receptor activity–modifying proteins (RAMPs)</strong> form complexes with G protein–coupled receptors (GPCRs) and may regulate their cellular trafficking and pharmacology. RAMP interactions have been identified for about 50 GPCRs, but only a few GPCR-RAMP complexes have been studied in detail. To elucidate a comprehensive GPCR-RAMP interactome, we created a library of 215 dual epitope-tagged (DuET) GPCRs representing all GPCR subfamilies and coexpressed each GPCR with each of the three RAMPs. Screening the GPCR-RAMP pairs with customized multiplexed suspension bead array (SBA) immunoassays, we identified 122 GPCRs that showed strong evidence for interaction with at least one RAMP. We screened for interactions in three cell lines and found 23 endogenously expressed GPCRs that formed complexes with RAMPs. Mapping the GPCR-RAMP interactome expands the current system-wide functional characterization of RAMP-interacting GPCRs to inform the design of selective therapeutics targeting GPCR-RAMP complexes.</p>"),
       HTML("<p><strong>This app</strong> provides complementary visualizations for the interactome analysis, such as per-GPCR summaries
            of the detected interactions and customisable overview heatmaps.</p>"),
       HTML("<p><strong>Data</strong> can be found at the
-           <a href='https://figshare.scilifelab.se' target='_blank' rel='noopener noreferrer'><strong>SciLifeLab Data Repository on FigShare</strong></a>
+           <a href='https://doi.org/10.17044/scilifelab.24999260.v1' target='_blank' rel='noopener noreferrer'><strong>SciLifeLab Data Repository on FigShare</strong></a>
            and <strong> code </strong> is found at the 
-           <a href='https://github.com/Schwenk-Lab' target='_blank' rel='noopener noreferrer'><strong> Schwenk Lab Gitub account</strong></a>
-           upon publication."),
+           <a href='https://github.com/Schwenk-Lab/gpcr_ramp_interactome' target='_blank' rel='noopener noreferrer'><strong> Schwenk Lab Gitub account</strong></a> and the associated
+           <a href='https://zenodo.org/doi/10.5281/zenodo.11371645' target='_blank' rel='noopener noreferrer'> <strong> Zenodo repository </strong></a>."),
       hr(),
       HTML("App developed by Leo Dahl"), br(),
-      HTML("App version 1.0.0"), br(),
+      HTML("App version 1.0.1"), br(),
+      HTML("<details><summary>Click for version history</summary>
+           <strong>v1.0.1</strong>: <br>
+           - Update with DOI links after publication. <br>
+           - Set GLP1R to be shown in the beginning. <br>
+           - Make cell outlines thicker and update legend for heatmap in GPCR-RAMP interactome tab. <br>
+           - Add version history.
+           </details>"), br(),
       HTML("Using the bslib Flatly theme")
     ),
     

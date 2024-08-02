@@ -12,7 +12,7 @@ gpcr_select_ui <- function(id) {
 }
 
 gpcr_select_server <- function(id, data_in) {
-  # data_in, dataset containing the shorter long data structure
+  # data_in, dataset containing the long data structure
   moduleServer(id, function(input, output, session) {
     
     # GPCR names to choose from
@@ -29,11 +29,11 @@ gpcr_select_server <- function(id, data_in) {
     
     # Make GPCR input UI with GPCRs from data
     output$gpcr_select <- renderUI({
-      selectInput(NS(id, "choose_gpcr"), "Select GPCR", gpcrs, selected = "ADORA1")
+      selectInput(NS(id, "choose_gpcr"), "Select GPCR", gpcrs, selected = "GLP1R")
     })
     
     output$uniprot_select <- renderUI({
-      selectInput(NS(id, "choose_uniprot"), "Select UniProt ID", uniprots, selected = "P30542")
+      selectInput(NS(id, "choose_uniprot"), "Select UniProt ID", uniprots, selected = "P43220")
     })
     
     # Sync the inputs
@@ -388,7 +388,7 @@ single_gpcr_hm_server <- function(id, gpcr_in, cxdet_epi, cxdet_hpa) {
                       if (!is.na(int_exp[j, "int_exp", drop = T])) {
                         border_lty <- int_exp[j, "int_exp", drop = T]
                         grid.rect(x = x, y = y, width = width, height = height,
-                                  gp = gpar(lty = border_lty, fill = NA, col = "black"))
+                                  gp = gpar(lty = border_lty, lwd = 2, fill = NA, col = "black"))
                       }
                     })
       # Legends for colours and cell outlines
@@ -396,8 +396,9 @@ single_gpcr_hm_server <- function(id, gpcr_in, cxdet_epi, cxdet_hpa) {
         Legend(labels = c("Pass", "Fail"), title = "Interaction", type = "grid", legend_gp = gpar(fill = brewer.pal(3, "Set2")[-3]),
                labels_gp = gpar(fontsize = 13), title_gp = gpar(fontsize = 16),
                direction = "horizontal"),
-        Legend(labels = c("Expected", "None", "Uncertain"), title = "Interaction in\nliterature", type = "lines",
-               legend_gp = gpar(col = "black", lty = c("solid", "dotted", "dashed")),
+        Legend(labels = c("Expected", "No interaction", "Uncertain", "No literature"),
+               title = "Interaction in\nliterature", type = "lines",
+               legend_gp = gpar(col = "black", lty = c(1, 2, 3, 0)),
                labels_gp = gpar(fontsize = 13), title_gp = gpar(fontsize = 16),
                direction = "horizontal")
       )
@@ -645,7 +646,7 @@ all_hm_server <- function(id, data_in, hm_param) {
                     text = which_ramp, xref = "paper", yref = "paper", xanchor = "center", yanchor = "bottom", align = "center",
                     x = 0.5, y = 1, showarrow = F, font = list(size = 18, color = "black")),
                   yaxis = list(title = list(text = "GPCR"))
-                )
+                  )
               
               # Use different colours and colour bars depending on selections
               if (hm_param()$int_or_sum == "Summary" & hm_param()$frac_or_str == "Fraction pass") {
