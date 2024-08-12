@@ -398,7 +398,7 @@ single_gpcr_hm_server <- function(id, gpcr_in, cxdet_epi, cxdet_hpa) {
                direction = "horizontal"),
         Legend(labels = c("Expected", "No interaction", "Uncertain", "No literature"),
                title = "Interaction in\nliterature", type = "lines",
-               legend_gp = gpar(col = "black", lty = c(1, 2, 3, 0)),
+               legend_gp = gpar(col = "black", lty = c(1, 3, 2, 0)),
                labels_gp = gpar(fontsize = 13), title_gp = gpar(fontsize = 16),
                direction = "horizontal")
       )

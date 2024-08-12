@@ -49,8 +49,10 @@ ui <- fluidPage(
            <a href='https://zenodo.org/doi/10.5281/zenodo.11371645' target='_blank' rel='noopener noreferrer'> <strong> Zenodo repository </strong></a>."),
       hr(),
       HTML("App developed by Leo Dahl"), br(),
-      HTML("App version 1.0.1"), br(),
+      HTML("App version 1.0.2"), br(),
       HTML("<details><summary>Click for version history</summary>
+           <strong>v1.0.2</strong>: <br>
+           - Fix incorrect labels in cell outline legend for heatmap in GPCR-RAMP interactome tab. <br>
            <strong>v1.0.1</strong>: <br>
            - Update with DOI links after publication. <br>
            - Set GLP1R to be shown in the beginning. <br>
